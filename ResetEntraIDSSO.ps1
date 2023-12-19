@@ -6,39 +6,43 @@ Version:  1.1.0
 
 Revisions: 1.0.0 Initial version
 Update:    1.1.0 Moved vars into Azure Automation variables
+
 pre-req's
-*The domain controller must be in an Azure IaaS OR have the Azure ARC agent installed as it will be used as the
- hybrid worker.
+* The domain controller must be deployed in Azure IaaS OR have the Azure ARC agent installed as it will be used as a
+  hybrid worker.
 
-*The domain controller must be able to run Azure Automation scripts, so its agent must be present in Azure Automation
- ADConnect .dll's from c:\program files\Microsoft Azure Active Directory Connect must be copied to the same location on
- the domain controller where Azure Automation will run the script.
+* The domain controller must be able to run Azure Automation scripts, so its agent must be present in Azure Automation.
+* ADConnect .dll's from c:\program files\Microsoft Azure Active Directory Connect must be copied to the same location on
+  the domain controller where Azure Automation will run the script.
 
-*There must be an on-prem service account in the TIER 0 OU.
-*The on-prem account should be restricted to the domain controller.
-*There must be an Entra ID User account, set up as eligible in PIM for the Hybrid Identity Administrator Role
-*The cloud account should be contrained by conditional access to only be usable from the domain controller, and
- not permit logon from any other location.
+* There must be an on-prem service account in the TIER 0 OU.
+* The on-prem account should be restricted to the domain controller.
+* There must be an Entra ID User account, set up as eligible in PIM for the Hybrid Identity Administrator Role.
+* The cloud account should be constrained by conditional access to only be usable from the domain controller, and
+  not permitted to logon from any other location.
 
-*This script will download any PowerShell dependencies to the Domain Controller.
-*Ensure the Azure Automation account where this will be running is in a TIER 0 sub that is only readable and manageable by global admins.
- Remember what you are dealing with here.
+* This script will is reliant on the Hybrid Worker Domain Controller have the Azure AD PowerShell Module, 
+  AzureADPreview Modules, and AD Modules.
+* Ensure the Azure Automation account where this scripts will be running is in a TIER 0 sub that is only readable and 
+  manageable by global admins.  Remember what you are dealing with here.
 
-* Set your azure automation variables, see lines 201 through 205
+* Set your azure automation variables, see lines 223 through 227
 
-This script will check the AzureAD KrbTGT (used for Windows Hello) and the Azure Hybrid SSO computer object's last password
-date.  If older than 30 days:
+This script will check the AzureAD KrbTGT (used for Windows Hello) and the Azure Hybrid SSO computer objects' last password
+date.  It will attempt to read the values, and if they need to be changed elevate to the necessary permissions and change them.
 
-The script will logon with an AzureAD user, that is restricted by a conditional access policy, on the Azure Automation enabled
+If older than 30 days:
+
+The script will logon with an Entra ID user, that is restricted by a conditional access policy, on the Azure Automation enabled
 domain controller.
 
-That user will then evalate to the AzureAD Hybrid Identity Role, create a temporary Domain Admin/Enterprise Admin with 
-a random password
+That user will then evalate to the AzureAD Hybrid Identity Role, enable a temporary Domain Admin/Enterprise Admin with 
+a random password.
 
-Reset both the SSO object and AzureAD KrbTGT passwords, the remove the temprorary Domain Admin/Enterprise Admin from those groups,
-randomize the password, and disable the temp account
+Reset both the SSO object and AzureAD KrbTGT passwords, then remove the temprorary Domain Admin/Enterprise Admin from those groups,
+randomize the password, and disable the temp account.  The PIM activiation will expire after one hour.
 
-The actions will be sent via email, alerting on the state the resets are (failed, succeeded).
+The actions will be sent via email, alerting on the state of the resets (failed, succeeded).
 
 #>
 
@@ -47,7 +51,7 @@ The actions will be sent via email, alerting on the state the resets are (failed
 #Do not make changes to functions
 ########################################################################
 #region functions
-#Microsoft's check a generated complicated password to make sure it's complicated
+#Microsoft's "check a generated complicated password to make sure it's complicated"
 function Confirm-CtmADPasswordIsComplex{
     Param(
     [Parameter(Mandatory=$true,ValueFromPipeline=$true)]
@@ -67,7 +71,7 @@ function Confirm-CtmADPasswordIsComplex{
         }
     }
 
-#generate complex password
+#generate a complex password
 function New-CtmADComplexPassword{
     Param(
         [Parameter(Mandatory=$false,ValueFromPipeline=$true)]
@@ -108,19 +112,19 @@ function New-CtmADComplexPassword{
 
 #use PIM to elevate the Admin user
 Function Grant-EntraHybridAdmin ([System.Management.Automation.PSCredential]$AzureADCredential){
-    Write-output "Attempting to elevate to Role: Azure AD Hyrbid Identity Administrator"
+    Write-output "Attempting to elevate to Role: Entra ID Hyrbid Identity Administrator"
     try{
-    Write-output "Attempting to connect to Azure AD"
+    Write-output "Attempting to connect to Entra ID"
     Connect-AzureAD -Credential $AzureADCredential -ErrorAction SilentlyContinue -ErrorVariable noConnect
     }
     catch{
-    Write-Error "Failed to connect to Azure AD.  Exiting"
+    Write-Error "Failed to connect to Entra ID.  Exiting"
     Return $noConnect} 
 
     #cannot use connect-mggraph because it won't accept anything but interactive logons and app registrations
     #cannot use get-azaccesstoken because that will not accept specified scopes
     #thanks Microsoft
-    Write-output "Connected to Azure AD"
+    Write-output "Connected to Entra ID"
 
     try{
     if(!(Get-InstalledModule -Name AzureADPreview)){
@@ -128,16 +132,16 @@ Function Grant-EntraHybridAdmin ([System.Management.Automation.PSCredential]$Azu
     Install-Module -Name AzureADPreview -RequiredVersion 2.0.2.149 -AllowClobber}
     Import-Module AzureADPreview -RequiredVersion 2.0.2.149
 
-    Write-output "Getting AzureAD Tenant details"
+    Write-output "Getting Entra ID Tenant details"
     $tenantID=Get-AzureADTenantDetail
     
-    Write-output "Getting AzureAD privileged role definition for Hybrid Identity Administrator "
+    Write-output "Getting Entra ID privileged role definition for Hybrid Identity Administrator "
     $AADRole=Get-AzureADMSPrivilegedRoleDefinition -ProviderId aadRoles `
                                                    -ResourceId $tenantID.ObjectID `
                                                    -Filter "endswith(DisplayName,'Hybrid Identity Administrator')"
     
   
-    Write-output "AzureAD Credential to be elevated: $($AzureADCredential.UserName)"
+    Write-output "Entra ID Credential to be elevated: $($AzureADCredential.UserName)"
     $schedule = New-Object Microsoft.Open.MSGraph.Model.AzureADMSPrivilegedSchedule
     $schedule.Type = "Once"
     $schedule.StartDateTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
@@ -161,7 +165,7 @@ Function Grant-EntraHybridAdmin ([System.Management.Automation.PSCredential]$Azu
                                                   -Type 'userAdd' `
                                                   -AssignmentState 'Active' `
                                                   -Schedule $schedule `
-                                                  -Reason "Resetting Hybrid SSO and AzureAD KrbTGT"
+                                                  -Reason "Resetting Hybrid SSO and Entra ID Cloud Kerberos Trust KrbTGT"
     
     sleep -Seconds 30 
     Return $true
@@ -203,7 +207,7 @@ Function Revoke-ADAccountAccess([STRING]$ADuserName,[STRING]$ADuserPassword,[STR
     Remove-PrivGripMember -group "Domain Admins"     -user $(($ADuserName) -split "\\")[1]
     Remove-PrivGripMember -group "Enterprise Admins" -user $(($ADuserName) -split "\\")[1]
     try{
-    Write-output "Disconnect AzureAD session"
+    Write-output "Disconnect Entra ID session"
     Disconnect-AzureAD -Confirm:$false -ErrorAction SilentlyContinue}
     catch{}
 }
@@ -229,13 +233,13 @@ $MaxAge     = 30
 ########################################################################
 #Do not make changes belows this line
 ########################################################################
-#grab the AzureAD SSO user cred for Azure Automation
-Write-output "Retrieving AzureAD SSO Automation Creds"
+#grab the Entra ID SSO user cred for Azure Automation
+Write-output "Retrieving Entra ID SSO Automation Creds"
 $AzureADSSO = get-automationPSCredential -Name "AzureADSSO"
 
 
 #set the location for ADConnect's DLL files, then import the module
-Write-output "Loading AzureAD Connect Modules"
+Write-output "Loading Entra ID Connect Modules"
 $loc        = "$env:ProgramFiles\Microsoft Azure Active Directory Connect"
 Import-Module $loc\AzureADSSO.psd1
 
@@ -259,55 +263,55 @@ Set-ADAccountPassword -Identity $(($ADuserName) -split "\\")[1] -NewPassword $Ne
 #set the current data var
 $today=Get-date
 
-#Check the last password value of the AzureAD SSO object in on-prem AD
+#Check the last password value of the Entra ID SSO object in on-prem AD
 
 $AzureADSSOObject=Get-date((Get-ADComputer AZUREADSSOACC -Properties passwordlastset).passwordlastset)
 $diff=(New-TimeSpan -Start $AzureADSSOObject -End $today).Days
-Write-output "Azure AD SSO object is $($diff) days old."
-#if the AzureAD SSO object's password is older then 30 days, reset it.  
+Write-output "Entra ID SSO object is $($diff) days old."
+#if the Entra ID SSO object's password is older then 30 days, reset it.  
 if($diff -ge $MaxAge){
-    Write-output "Resetting Azure AD SSO object"
+    Write-output "Resetting Entra ID SSO object"
     #call the custom function to enable the on-prem temporary account
     #and put that account in domain admins and enterprise admins
     Grant-ADAccountAccess -ADuserName $ADuserName -DC $dc
 
-    #call the custom function to elevate the AzureAD user to the Hybrid Identity Administrator Role
+    #call the custom function to elevate the Entra ID user to the Hybrid Identity Administrator Role
     $Elevation=Grant-EntraHybridAdmin -AzureADCredential $AzureADSSO
     if(!$Elevation){break}
 
-    #reset AzureAD Hybrid SSO for on-prem AD
+    #reset Entra ID Hybrid SSO for on-prem AD
     try{
         #set the context for resetting the SSO object
         
 
-        Write-output "Set Azure AD authentication context for $($tenant)."
+        Write-output "Set Entra ID authentication context for $($tenant)."
         #will not accept the use of app registration with secrets or certs
         #cannot use MSAL.PS tokens
         #stuck with manual resets or stored creds
         #thanks Microsoft
-        New-AzureADSSOAuthenticationContext -CloudCredentials $AzureADSSO -TenantId $tenant -Verbose #ask for Azure Global Admin
+        New-AzureADSSOAuthenticationContext -CloudCredentials $AzureADSSO -TenantId $tenant -Verbose 
         
         Get-AzureADSSOStatus -Verbose | ConvertFrom-Json -Verbose #ask for onprem DA account
         
         #Reset the SSO Object
-        Write-output "Update Azure AD SSO Passord $($tenant)."
+        Write-output "Update Entra ID SSO Passord $($tenant)."
         Update-AzureADSSOForest -OnPremCredentials $ADcreds -PreserveCustomPermissionsOnDesktopSsoAccount -Verbose
     }
     catch{
             
             #if the attempt fails, remove the temp admin from domain admins and enterprise admins
             #scramble the password, and disable the account
-            Write-error "Update Azure AD SSO Passord for $($tenant) failed."
+            Write-error "Update Entra ID SSO Passord for $($tenant) failed."
             Revoke-ADAccountAccess -ADuserName $ADuserName -ADuserPassword $ADuserPassword -DC $dc
             
             
             #send an email that the attempt failed, and stop the script
-            Write-output "Sending Azure AD SSO update failure email to team."
-            $body="AzureAD Hybrid SSO Reset failed for $($domain.NetBIOSName)"
+            Write-output "Sending Entra ID SSO update failure email to team."
+            $body="Entra ID Hybrid SSO Reset failed for $($domain.NetBIOSName)"
                    
             Send-MailMessage -From $senderAcct `
                              -to  $recipient `
-                             -Subject "FAILED: $($domain.NetBIOSName) AzureAD Hybrid SSO Reset" `
+                             -Subject "FAILED: $($domain.NetBIOSName) Entra ID Hybrid SSO Reset" `
                              -Body $body `
                              -Priority High `
                              -BodyAsHtml `
@@ -318,12 +322,12 @@ if($diff -ge $MaxAge){
     
     }
     #the attempt succeeded, send an email
-    Write-output "Update Azure AD SSO Passord for $($tenant) succeeded, sending email to team."
-    $body="AzureAD Hybrid SSO Reset succeeded for $($domain.NetBIOSName)"
+    Write-output "Update Entra ID SSO Passord for $($tenant) succeeded, sending email to team."
+    $body="Entra ID Hybrid SSO Reset succeeded for $($domain.NetBIOSName)"
            
     Send-MailMessage -From $senderAcct `
                      -to  $recipient `
-                     -Subject "SUCCESS: $($domain.NetBIOSName) AzureAD Hybrid SSO Reset" `
+                     -Subject "SUCCESS: $($domain.NetBIOSName) Entra ID Hybrid SSO Reset" `
                      -Body $body `
                      -Priority High `
                      -BodyAsHtml `
@@ -332,18 +336,18 @@ if($diff -ge $MaxAge){
     
 }
 
-#check the AzureAD KrbTGT
+#check the Entra ID Cloud KrbTGT
 $AzureADKrbTGT=Get-date((Get-ADUser -filter {cn -eq "krbtgt_AzureAD"} -Properties passwordlastset).passwordlastset)
 $diff=(New-TimeSpan -Start $AzureADKrbTGT -End $today).Days
-Write-output "Azure AD Windows Hello Cloud trust Passord for $($tenant) is $($diff) days old."
+Write-output "Entra ID Windows Hello Cloud trust Passord for $($tenant) is $($diff) days old."
 
-#if the AzureAD KrbTGT is older than 30 days, reset it
+#if the Entra ID KrbTGT is older than 30 days, reset it
 if($diff -ge $MaxAge){
-   Write-output "Azure AD Windows Hello Cloud trust Passord is being reset."
+   Write-output "Entra ID Windows Hello Cloud trust Passord is being reset."
     #Elevete, if the temp accouunt needs to enabled and elevated to domain admin/enterprise admin
     Grant-ADAccountAccess -ADuserName $ADuserName -DC $dc
     
-    #if the AzureAD SSO account is not already elevated from the SSO reset in the previous step - then do it in this step
+    #if the Entra ID SSO account is not already elevated from the SSO reset in the previous step - then do it in this step
     if(!$Elevation){$Elevation=Grant-EntraHybridAdmin -AzureADCredential $AzureADSSO}
     # if the elevation has not happend, stop the script
     if(!$Elevation){break}
@@ -351,29 +355,29 @@ if($diff -ge $MaxAge){
     # install the Hybrid auth module, if it's not present
 
     if(!(Get-Module -name AzureADHybridAuthenticationManagement)){
-    Write-output "Azure AD Hybrid Auth PowerShell module is not present.  Installing the module"
+    Write-output "Entra ID Hybrid Auth PowerShell module is not present.  Installing the module"
     Install-Module -Name AzureADHybridAuthenticationManagement -AllowClobber
     }
    
     Try{
          #Set the AzureAD KrbTGT
-         Write-output "Attempting to set Azure AD Cloud Trust password"
+         Write-output "Attempting to set Entra ID Cloud Trust password"
          Set-AzureADKerberosServer -Domain $($domain.DNSRoot) -DomainCredential $ADCreds -CloudCredential $AzureADSSO  -RotateServerKey
     }
     catch{
             #if the attempt fails, remove the temp admin from domain admins and enterprise admins
             #scramble the password, and disable the account
-             Write-error "Attempting to set Azure AD Cloud Trust password failed."
+             Write-error "Attempting to set Entra ID Cloud Trust password failed."
              Revoke-ADAccountAccess -ADuserName $ADuserName -ADuserPassword $ADuserPassword -DC $dc
 
             
             #send an email that the attempt failed, and stop the script
-            Write-output "Sending Azure AD Cloud Trust password failed message to team."
-            $body="AzureAD Cloud KrbTGT Reset failed for $($domain.NetBIOSName)"
+            Write-output "Sending Entra ID Cloud Trust password failed message to team."
+            $body="Entra ID Cloud KrbTGT Reset failed for $($domain.NetBIOSName)"
                    
             Send-MailMessage -From $senderAcct `
                              -to  $recipient `
-                             -Subject "Failed: $($domain.NetBIOSName) AzureAD Cloud KrbTGT Reset " `
+                             -Subject "Failed: $($domain.NetBIOSName) Entra ID Cloud KrbTGT Reset " `
                              -Body $body `
                              -Priority High `
                              -BodyAsHtml `
@@ -383,12 +387,12 @@ if($diff -ge $MaxAge){
             break
     }
     #the attempt succeeded, send an email
-    Write-output "Attempting to set Azure AD Cloud Trust password succeeded.  Sending email"
-    $body="AzureAD Cloud KrbTGT Reset succeeded for $($domain.NetBIOSName)"
+    Write-output "Attempting to set Entra ID Cloud Trust password succeeded.  Sending email"
+    $body="Entra ID Cloud KrbTGT Reset succeeded for $($domain.NetBIOSName)"
            
     Send-MailMessage -From $senderAcct `
                      -to  $recipient `
-                     -Subject "SUCCESS: $($domain.NetBIOSName) AzureAD Cloud KrbTGT Reset" `
+                     -Subject "SUCCESS: $($domain.NetBIOSName) Entra ID Cloud KrbTGT Reset" `
                      -Body $body `
                      -Priority High `
                      -BodyAsHtml `
