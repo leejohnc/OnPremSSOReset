@@ -14,7 +14,7 @@ pre-req's
  ADConnect .dll's from c:\program files\Microsoft Azure Active Directory Connect must be copied to the same location on
  the domain controller where Azure Automation will run the script.
 
-*There must be an on-prem service account in the DEAM OU.
+*There must be an on-prem service account in the TIER 0 OU.
 *The on-prem account should be restricted to the domain controller.
 *There must be an Entra ID User account, set up as eligible in PIM for the Hybrid Identity Administrator Role
 *The cloud account should be contrained by conditional access to only be usable from the domain controller, and
